@@ -2,6 +2,31 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   use GenServer
   require Logger
 
+  @moduledoc """
+  Console reporter for displaying real-time trading statistics and system status.
+
+  Event Handlers:
+  - [:jupiter_bot, :perpetuals, :price_fetch] - Tracks successful price updates
+    * Increments total_updates counter
+    * Updates last_price_update_time
+    * Payload: %{price: float()}
+
+  - [:jupiter_bot, :perpetuals, :price_fetch_error] - Tracks failed price fetches
+    * Increments failed_requests counter
+    * Used for monitoring RPC connection health
+    * No specific payload requirements
+
+  Network Statistics Tracked:
+  - RPC Status (Connected/Disconnected)
+  - Last Price Update Time
+  - Total Updates Received
+  - Failed Request Count
+  - Connection Uptime
+
+  The system maintains these stats using Process dictionary for lightweight
+  state management across event handlers.
+  """
+
   # ANSI escape codes
   @clear_line "\e[2K"
   @move_up "\e[1A"
@@ -50,6 +75,11 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   @price_change_threshold 0.02  # 2% change threshold
 
   @debug_log_limit 10  # Reduced from 15
+
+  # Add color constants for network status
+  @green_color "\e[32m"    # Green
+  @red_color "\e[31m"      # Red
+  @reset_color "\e[0m"
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -597,23 +627,17 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
 
   defp format_system_diagnostics do
     try do
-      # Memory stats (safe)
+      # Get network stats
+      network_stats = get_network_stats()
       memory = :erlang.memory()
-      process_count = length(Process.list())
-
-      # Get BEAM stats (wrapped in try)
-      {io_stats, run_queue_stats, reduction_stats} = get_beam_stats()
-
-      # Get scheduler info (wrapped in try)
-      {schedulers_online, dirty_cpu_schedulers} = get_scheduler_info()
 
       [
-        "BEAM Stats:",
-        "  Schedulers: #{schedulers_online} (#{dirty_cpu_schedulers} dirty CPU)",
-        "  Run Queue: #{run_queue_stats}",
-        "  Process Count: #{process_count}",
-        "  Reductions: #{format_number(reduction_stats)}",
-        "  IO: #{io_stats}",
+        "Network Stats:",
+        "  RPC Status: #{network_stats.rpc_status}",
+        "  Last Price Update: #{format_last_update(network_stats.last_update)}",
+        "  Updates Received: #{network_stats.updates_received}",
+        "  Failed Requests: #{network_stats.failed_requests}",
+        "  Connection Uptime: #{network_stats.uptime}",
         "",
         "Memory Usage:",
         "  Total: #{format_bytes(memory[:total])}",
@@ -627,39 +651,55 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
     end
   end
 
-  defp get_beam_stats do
-    try do
-      {{:input, input}, {:output, output}} = :erlang.statistics(:io)
-      {total_run_queue, normal_run_queue} = :erlang.statistics(:run_queue_lengths_all)
-      {reductions, _} = :erlang.statistics(:reductions)
+  defp get_network_stats do
+    # Get stats from process dictionary
+    updates = Process.get(:total_updates, 0)
+    failures = Process.get(:failed_requests, 0)
+    last_update = Process.get(:last_price_update_time)
+    start_time = Process.get(:start_time) || :os.system_time(:second)
 
-      io_stats = "#{format_bytes(input)} in / #{format_bytes(output)} out"
-      run_queue_stats = "#{total_run_queue} total, #{normal_run_queue} normal"
+    # Calculate uptime
+    current_time = :os.system_time(:second)
+    uptime = current_time - start_time
 
-      {io_stats, run_queue_stats, reductions}
-    rescue
-      _ -> {"N/A", "N/A", 0}
+    # Determine RPC status based on recent activity
+    rpc_status = case last_update do
+      nil -> "Initializing"
+      time when is_number(time) ->
+        if current_time - time > 10 do
+          "#{@red_color}Disconnected#{@reset_color}"
+        else
+          "#{@green_color}Connected#{@reset_color}"
+        end
+    end
+
+    %{
+      rpc_status: rpc_status,
+      last_update: last_update,
+      updates_received: updates,
+      failed_requests: failures,
+      uptime: format_duration(uptime)
+    }
+  end
+
+  defp format_last_update(nil), do: "Never"
+  defp format_last_update(timestamp) do
+    seconds_ago = :os.system_time(:second) - timestamp
+    cond do
+      seconds_ago < 5 -> "#{@green_color}Just now#{@reset_color}"
+      seconds_ago < 30 -> "#{seconds_ago}s ago"
+      true -> "#{@red_color}#{seconds_ago}s ago#{@reset_color}"
     end
   end
 
-  defp get_scheduler_info do
-    try do
-      schedulers_online = :erlang.system_info(:schedulers_online)
-      dirty_cpu_schedulers = :erlang.system_info(:dirty_cpu_schedulers_online)
-      {schedulers_online, dirty_cpu_schedulers}
-    rescue
-      _ -> {0, 0}
-    end
+  defp format_duration(seconds) do
+    {h, m, s} = {
+      div(seconds, 3600),
+      rem(div(seconds, 60), 60),
+      rem(seconds, 60)
+    }
+    "#{h}h #{m}m #{s}s"
   end
-
-  defp format_number(num) when num >= 1_000_000_000,
-    do: "#{Float.round(num / 1_000_000_000, 2)}B"
-  defp format_number(num) when num >= 1_000_000,
-    do: "#{Float.round(num / 1_000_000, 2)}M"
-  defp format_number(num) when num >= 1_000,
-    do: "#{Float.round(num / 1_000, 2)}K"
-  defp format_number(num),
-    do: "#{num}"
 
   defp format_bytes(bytes) when bytes < 1024, do: "#{bytes} B"
   defp format_bytes(bytes) when bytes < 1024 * 1024, do: "#{Float.round(bytes / 1024, 2)} KB"

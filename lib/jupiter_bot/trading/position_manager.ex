@@ -55,20 +55,12 @@ defmodule JupiterBot.Trading.PositionManager do
   end
 
   # Private Functions
-  defp execute_order(_pair, _size, _leverage, _direction) do
-    # ... implementation
-  end
-
-  defp update_positions(state, order) do
-    %{state | positions: Map.put(state.positions, order.id, order)}
-  end
-
   defp do_close_position(position) do
     # Return only the closed_at field to match the doctest
     {:ok, %{closed_at: position.closed_at}}
   end
 
-  defp create_position(pair, size, leverage, direction) do
+  defp create_position(_pair, _size, _leverage, _direction) do
     # Temporary mock implementation
     position_id = "pos_#{:rand.uniform(1000)}"
     {:ok, %{position_id: position_id}}

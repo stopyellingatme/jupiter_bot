@@ -4,8 +4,6 @@ defmodule JupiterBot.Trading.Strategies.MovingAverage do
   This module handles the mathematical and analytical components.
   """
 
-  alias JupiterBot.Telemetry.ConsoleReporter
-
   # MA Periods for multiple timeframe analysis
   @short_period 9    # Quick response to price changes
   @medium_period 21  # Trend confirmation
@@ -31,17 +29,11 @@ defmodule JupiterBot.Trading.Strategies.MovingAverage do
   @spec calculate_indicators([number()]) :: ma_data() | nil
   def calculate_indicators(prices) when length(prices) > 0 do
     current_price = hd(prices)
-    prices_count = length(prices)
-
-    # add_debug_log("Calculating MAs with #{prices_count} available prices")
 
     # Calculate each MA if we have enough data
     {short_ma, short_ready} = calculate_single_ma(prices, @short_period)
-    {medium_ma, medium_ready} = calculate_single_ma(prices, @medium_period)
-    {long_ma, long_ready} = calculate_single_ma(prices, @long_period)
-
-    # Log the current state of calculations
-    # log_calculation_status(current_price, prices_count, short_ready, medium_ready, long_ready)
+    {medium_ma, _medium_ready} = calculate_single_ma(prices, @medium_period)
+    {long_ma, _long_ready} = calculate_single_ma(prices, @long_period)
 
     if short_ready do
       trend_strength = calculate_trend_strength(short_ma, medium_ma, long_ma)
@@ -61,10 +53,8 @@ defmodule JupiterBot.Trading.Strategies.MovingAverage do
   end
   def calculate_indicators(_), do: nil
 
-  @doc """
-  Calculates a single moving average value for the given period.
-  Returns {value, ready} tuple where ready indicates if enough data was available.
-  """
+  # Calculates a single moving average value for the given period.
+  # Returns {value, ready} tuple where ready indicates if enough data was available.
   defp calculate_single_ma(prices, period) when is_list(prices) and length(prices) >= period do
     case Enum.take(prices, period) do
       [] -> {nil, false}
@@ -78,21 +68,6 @@ defmodule JupiterBot.Trading.Strategies.MovingAverage do
     end
   end
   defp calculate_single_ma(_, _), do: {nil, false}
-
-  defp log_calculation_status(price, total_count, short_ready, medium_ready, long_ready) do
-    status = "Price: #{format_float(price)} | " <>
-             "Total prices: #{total_count} | " <>
-             "Short MA: #{status_text(short_ready, @short_period)} | " <>
-             "Medium MA: #{status_text(medium_ready, @medium_period)} | " <>
-             "Long MA: #{status_text(long_ready, @long_period)}"
-
-    add_debug_log(status)
-  end
-
-  defp status_text(true, _period), do: "Ready"
-  defp status_text(false, period), do: "Needs #{period} prices"
-
-  # Private helper functions
 
   defp calculate_trend_strength(short_ma, medium_ma, long_ma) when not is_nil(short_ma) do
     cond do
@@ -168,13 +143,4 @@ defmodule JupiterBot.Trading.Strategies.MovingAverage do
     {signal, strength}
   end
   def generate_signal(_), do: {:none, 0.0}
-
-  defp format_float(nil), do: "nil"
-  defp format_float(number) when is_float(number), do: :erlang.float_to_binary(number, decimals: 4)
-  defp format_float(number), do: "#{number}"
-
-  # Helper function to add debug logs
-  defp add_debug_log(message) do
-    GenServer.cast(ConsoleReporter, {:add_debug_log, message})
-  end
 end

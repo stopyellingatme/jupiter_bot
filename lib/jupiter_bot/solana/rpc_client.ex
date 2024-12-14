@@ -28,6 +28,18 @@ defmodule JupiterBot.Solana.RPCClient do
   end
 
   @impl true
+  def handle_call({:get_account_info, nil}, _from, state) do
+    # Return default response when no pubkey is provided
+    {:reply, {:ok, %{total_usd: 1000.00, available_usd: 800.00}}, state}
+  end
+
+  @impl true
+  def handle_call({:get_account_info, _pubkey}, _from, state) do
+    # Mock implementation for testing
+    {:reply, {:ok, %{total_usd: 1000.00, available_usd: 800.00}}, state}
+  end
+
+  @impl true
   def handle_call({:send_transaction, transaction}, from, state) do
     case do_send_transaction(transaction, state) do
       {:ok, _signature} = result ->
@@ -47,7 +59,7 @@ defmodule JupiterBot.Solana.RPCClient do
     )
 
     case Solana.RPC.send_encoded_transaction(client, transaction) do
-      {:ok, signature} = result ->
+      {:ok, _signature} = result ->
         :telemetry.execute([:jupiter_bot, :price_update, :success], %{}, %{type: :rpc})
         result
       error ->
@@ -67,17 +79,5 @@ defmodule JupiterBot.Solana.RPCClient do
       current_node: next_node,
       retry_count: state.retry_count + 1
     }
-  end
-
-  @impl true
-  def handle_call({:get_account_info, nil}, _from, state) do
-    # Return default response when no pubkey is provided
-    {:reply, {:ok, %{total_usd: 1000.00, available_usd: 800.00}}, state}
-  end
-
-  @impl true
-  def handle_call({:get_account_info, pubkey}, _from, state) do
-    # Mock implementation for testing
-    {:reply, {:ok, %{total_usd: 1000.00, available_usd: 800.00}}, state}
   end
 end

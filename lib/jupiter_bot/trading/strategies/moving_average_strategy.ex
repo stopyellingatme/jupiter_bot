@@ -1,7 +1,6 @@
 defmodule JupiterBot.Trading.Strategies.MovingAverageStrategy do
   use GenServer, restart: :permanent
   alias JupiterBot.Trading.Strategies.MovingAverage
-  alias JupiterBot.Telemetry.ConsoleReporter
 
   @price_check_interval 1000
   @price_history_limit 500
@@ -100,6 +99,45 @@ defmodule JupiterBot.Trading.Strategies.MovingAverageStrategy do
   end
 
   @impl true
+  def handle_info({:price_updated, price}, %State{price_history: history} = state) do
+    GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
+      {:debug_log, "Processing price update: #{price}"})
+
+    timestamp = DateTime.utc_now()
+    new_price_point = %PricePoint{price: price, timestamp: timestamp}
+
+    # Ensure history is always a list
+    current_history = history || []
+
+    # Only add new price if it's significantly different from the last price
+    new_history = case current_history do
+      [last | _] when abs(last.price - price) < @min_price_change ->
+        GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
+          {:debug_log, "Skipping similar price: #{price} vs #{last.price} (keeping #{length(current_history)} prices)"})
+        current_history
+      _ ->
+        updated_history = [new_price_point | current_history] |> Enum.take(@price_history_limit)
+        GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
+          {:debug_log, "Added new price: #{price} (history size: #{length(updated_history)})"})
+        updated_history
+    end
+
+    new_state = %State{state |
+      current_price: price,
+      price_history: new_history,
+      last_update: timestamp
+    }
+
+    new_state
+    |> update_indicators()
+    |> generate_signals()
+    |> execute_trades()
+    |> report_status()
+
+    {:noreply, new_state}
+  end
+
+  @impl true
   def handle_info({:process_history, history}, state) when length(history) > 0 do
     prices = Enum.map(history, & &1.price)
     current_price = List.first(prices)
@@ -123,6 +161,8 @@ defmodule JupiterBot.Trading.Strategies.MovingAverageStrategy do
     report_status(new_state)
     {:noreply, new_state}
   end
+
+  @impl true
   def handle_info({:process_history, _}, state) do
     {:noreply, state}
   end
@@ -189,45 +229,6 @@ defmodule JupiterBot.Trading.Strategies.MovingAverageStrategy do
   defp add_debug_log(message) do
     timestamp = DateTime.utc_now() |> DateTime.to_time() |> Time.to_string()
     Process.put(:debug_logs, ["#{timestamp} | Strategy: #{message}" | Process.get(:debug_logs, [])])
-  end
-
-  @impl true
-  def handle_info({:price_updated, price}, %State{price_history: history} = state) do
-    GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
-      {:debug_log, "Processing price update: #{price}"})
-
-    timestamp = DateTime.utc_now()
-    new_price_point = %PricePoint{price: price, timestamp: timestamp}
-
-    # Ensure history is always a list
-    current_history = history || []
-
-    # Only add new price if it's significantly different from the last price
-    new_history = case current_history do
-      [last | _] when abs(last.price - price) < @min_price_change ->
-        GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
-          {:debug_log, "Skipping similar price: #{price} vs #{last.price} (keeping #{length(current_history)} prices)"})
-        current_history
-      _ ->
-        updated_history = [new_price_point | current_history] |> Enum.take(@price_history_limit)
-        GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
-          {:debug_log, "Added new price: #{price} (history size: #{length(updated_history)})"})
-        updated_history
-    end
-
-    new_state = %State{state |
-      current_price: price,
-      price_history: new_history,
-      last_update: timestamp
-    }
-
-    new_state
-    |> update_indicators()
-    |> generate_signals()
-    |> execute_trades()
-    |> report_status()
-
-    {:noreply, new_state}
   end
 
   # Add helper functions for price history analysis

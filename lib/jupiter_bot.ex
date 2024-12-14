@@ -4,7 +4,7 @@ defmodule JupiterBot do
   This module provides the main public API for interacting with the trading system.
   """
 
-  alias JupiterBot.Trading.{PositionManager, RiskManager, Strategy}
+  alias JupiterBot.Trading.{PositionManager, RiskManager}
   alias JupiterBot.Solana.{RPCClient, WebsocketClient}
 
   @doc """

@@ -1,9 +1,9 @@
 defmodule JupiterBot.Trading.Strategies.MomentumStrategy do
   use GenServer
+  require Logger  # Add this line
 
   @price_check_interval 1_000
   @price_history_limit 500
-  @momentum_threshold 0.02
 
   defmodule State do
     defstruct [
@@ -64,6 +64,16 @@ defmodule JupiterBot.Trading.Strategies.MomentumStrategy do
     {:noreply, state}
   end
 
+  @impl true
+  def handle_info(:check_momentum, state) do
+    # Report status through ConsoleReporter
+    GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
+      {:debug_log, "Momentum Update - Price: #{state.current_price}, Position: #{state.current_position}"})
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info({:price_updated, price}, state) do
     new_state = state
                 |> Map.put(:current_price, price)
@@ -194,29 +204,6 @@ defmodule JupiterBot.Trading.Strategies.MomentumStrategy do
     """)
   end
 
-  defp log_strategy_status(state) do
-    %{
-      trading_pair: {base, quote},
-      current_price: price,
-      current_momentum: momentum,
-      current_position: position,
-      strategy_stats: stats
-    } = state
-
-    Logger.info("""
-    📊 Strategy Status Update
-    ------------------------
-    Pair: #{base}/#{quote}
-    Price: #{format_price(price)}
-    Momentum: #{format_percentage(momentum)}
-    Position: #{position}
-    Total Trades: #{stats.total_trades}
-    Success Rate: #{format_percentage(stats.successful_trades / max(stats.total_trades, 1))}
-    """)
-
-    state
-  end
-
   defp update_trade_stats(state, :success) do
     update_in(state.strategy_stats, fn stats ->
       %{stats |
@@ -226,36 +213,9 @@ defmodule JupiterBot.Trading.Strategies.MomentumStrategy do
     end)
   end
 
-  defp format_strategy_stats(state) do
-    %{
-      trading_pair: {base, quote},
-      current_position: position,
-      strategy_stats: stats
-    } = state
-
-    %{
-      trading_pair: "#{base}/#{quote}",
-      position: position,
-      total_trades: stats.total_trades,
-      successful_trades: stats.successful_trades,
-      success_rate: format_percentage(stats.successful_trades / max(stats.total_trades, 1)),
-      running_since: stats.start_time |> DateTime.to_string()
-    }
-  end
-
   defp format_price(price) when is_number(price), do: :erlang.float_to_binary(price, decimals: 4)
   defp format_price(_), do: "N/A"
 
-  defp format_percentage(value) when is_number(value) do
-    "#{:erlang.float_to_binary(value * 100, decimals: 2)}%"
-  end
-  defp format_percentage(_), do: "N/A"
-
   defp format_pair(nil), do: "UNKNOWN/UNKNOWN"
   defp format_pair({base, quote}), do: "#{base}/#{quote}"
-
-  defp calculate_success_rate(%State{total_trades: 0}), do: 0.0
-  defp calculate_success_rate(%State{total_trades: total, successful_trades: successful}) do
-    successful / total * 100
-  end
 end

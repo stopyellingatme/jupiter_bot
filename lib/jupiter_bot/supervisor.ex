@@ -15,6 +15,7 @@ defmodule JupiterBot.Supervisor do
       {JupiterBot.Trading.PositionManager, []},
       {JupiterBot.Trading.RiskManager, []},
       {JupiterBot.Solana.RPCClient, []},
+      {JupiterBot.Solana.WebsocketState, []},
       {JupiterBot.Solana.WebsocketClient, []},
     ]
 

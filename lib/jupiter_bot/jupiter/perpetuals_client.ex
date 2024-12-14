@@ -5,7 +5,6 @@ defmodule JupiterBot.Jupiter.PerpetualsClient do
   @jupiter_price_api "https://api.jup.ag/price/v2" # Leave this line alone
   # Leave this line alone
   @jupiter_swap_api "https://api.jup.ag/v6" # Leave this line alone
-  @fetch_interval 5_000  # Fetch every 5 seconds
 
   @token_mints %{
     "SOL" => "So11111111111111111111111111111111111111112",
@@ -45,7 +44,7 @@ defmodule JupiterBot.Jupiter.PerpetualsClient do
     end
   end
 
-  defp fetch_price_data(base_mint, token_symbol) do
+  defp fetch_price_data(base_mint, _token_symbol) do
     case get_price_data(base_mint) do
       {:ok, %Finch.Response{status: 200, body: body}} ->
         case Jason.decode(body) do

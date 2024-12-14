@@ -26,13 +26,14 @@ defmodule JupiterBot.Telemetry.Metrics do
 
   # Price update events
   def handle_event([:jupiter_bot, :strategy, :price_update], measurements, metadata, _config) do
-    Logger.info("""
+    message = """
     💰 Price Update
     --------------
     Pair: #{metadata.pair}
     Price: #{Float.round(measurements.price, 4)}
     Time: #{DateTime.utc_now()}
-    """)
+    """
+    GenServer.cast(JupiterBot.Telemetry.ConsoleReporter, {:debug_log, message})
   end
 
   # Perpetuals price fetch events

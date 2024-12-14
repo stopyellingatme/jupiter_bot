@@ -1,10 +1,11 @@
 defmodule JupiterBot.Solana.WebsocketClient do
   use WebSockex
   require Logger
+  alias JupiterBot.Solana.WebsocketState
 
   def start_link(_opts) do
     url = "wss://history.oraclesecurity.org/trading-view/stream"
-    WebSockex.start_link(url, __MODULE__, %{prices: %{}}, name: __MODULE__)
+    WebSockex.start_link(url, __MODULE__, %{}, name: __MODULE__)
   end
 
   def subscribe_to_market(market) do
@@ -12,17 +13,18 @@ defmodule JupiterBot.Solana.WebsocketClient do
   end
 
   def get_latest_price(market) do
-    GenServer.call(__MODULE__, {:get_price, market})
+    WebsocketState.get_price(market)
   end
 
-  @impl true
+  @impl WebSockex
   def handle_connect(_conn, state) do
-    Logger.info("Connected to Oracle Security WebSocket server")
+    GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
+      {:debug_log, "🟢 Connected to Oracle Security WebSocket server"})
     :telemetry.execute([:jupiter_bot, :rpc, :connect], %{}, %{type: :websocket})
     {:ok, state}
   end
 
-  @impl true
+  @impl WebSockex
   def handle_frame({:text, msg}, state) do
     case Jason.decode(msg) do
       {:ok, data = %{"a" => "price"}} ->
@@ -40,61 +42,36 @@ defmodule JupiterBot.Solana.WebsocketClient do
     end
   end
 
-  @impl true
-  def handle_cast({:subscribe, market}, state) do
+  @impl WebSockex
+  def handle_cast({:subscribe, _market}, state) do
+    # Implementation for subscription
     {:ok, state}
   end
 
-  @impl true
-  def handle_call({:get_price, market}, _from, state) do
-    price = get_in(state, [:prices, market])
-    {:reply, {:ok, price}, state}
-  end
-
-  @impl true
+  @impl WebSockex
   def handle_disconnect(%{reason: reason}, state) do
-    Logger.warning("WebSocket disconnected: #{inspect(reason)}")
-    :telemetry.execute([:jupiter_bot, :rpc, :disconnect], %{}, %{type: :websocket, reason: reason})
+    GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
+      {:debug_log, "🔴 WebSocket Disconnected: #{inspect(reason)}"})
     {:ok, state}
   end
 
-  defp handle_price_update(%{"a" => "price", "b" => base, "q" => quote, "p" => price_str, "e" => exponent, "t" => timestamp} = data, state) do
-    price = String.to_integer(price_str) * :math.pow(10, exponent)
-    market = "#{base}-#{quote}"
-
-    new_state = put_in(state, [:prices, market], %{
-      price: price,
-      timestamp: timestamp
-    })
-
-    :telemetry.execute(
-      [:jupiter_bot, :perpetuals, :price_fetch],
-      %{
-        price: price,
-        timestamp: timestamp
-      },
-      %{market: market}
-    )
-
-    :telemetry.execute(
-      [:jupiter_bot, :price_update, :success],
-      %{price: price},
-      %{market: market, timestamp: timestamp}
-    )
-
-    Phoenix.PubSub.broadcast(
-      JupiterBot.PubSub,
-      "market_updates",
-      {:price_update, market, price, timestamp}
-    )
-
-    Logger.debug("Price update for #{market}: #{price}")
-
-    {:ok, new_state}
+  @impl WebSockex
+  def terminate(reason, _state) do
+    GenServer.cast(JupiterBot.Telemetry.ConsoleReporter,
+      {:debug_log, "🔴 WebSocket terminating: #{inspect(reason)}"})
+    exit(:normal)
   end
 
-  defp handle_price_update(data, state) do
-    Logger.debug("Unhandled message type: #{inspect(data)}")
+  defp handle_price_update(%{
+    "a" => "price",
+    "b" => base,
+    "q" => quote,
+    "p" => price_str,
+    "e" => _exponent,
+    "t" => _timestamp
+  } = _data, state) do
+    # Update price in WebsocketState
+    WebsocketState.update_price("#{base}-#{quote}", price_str)
     {:ok, state}
   end
 end

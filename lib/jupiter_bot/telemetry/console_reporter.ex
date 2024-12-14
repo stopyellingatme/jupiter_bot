@@ -28,16 +28,10 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   """
 
   # ANSI escape codes
-  @clear_line "\e[2K"
-  @move_up "\e[1A"
   @refresh_interval 250  # Slightly longer refresh interval
-  @ansi_clear_screen "\e[2J"
   @ansi_home "\e[H"
-  @ansi_hide_cursor "\e[?25l"
   @ansi_show_cursor "\e[?25h"
-  @ansi_alt_screen "\e[?1049h"
   @ansi_main_screen "\e[?1049l"
-  @ma_dot "·"               # Smaller dot for MA lines
   @price_bar "█"            # Full block for price bars
   @scale_buffer 0.1         # 10% buffer above and below min/max prices for better scaling
 
@@ -47,18 +41,11 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   @graph_up_color "\e[32m"    # Green
   @graph_down_color "\e[31m"  # Red
   @graph_neutral_color "\e[36m"  # Cyan
-  @short_ma_color "\e[35m"    # Magenta
-  @long_ma_color "\e[34m"     # Blue
   @divider "--------------------------------------------------------------------------------"
 
   # Graph settings
-  @graph_width 80
   @graph_height 15  # Reduced from 20
   @price_history_limit 500
-
-  # Number of lines in our status display
-  @status_lines 25
-  @newlines_before_stats 2
 
   @max_buffer_size 5    # Maximum number of updates to buffer
 
@@ -66,15 +53,6 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   @min_graph_width 80
   @price_label_width 10
   @margin_width 3  # For the "│ " separator and space
-
-  @graph_chars ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]  # Unicode block elements
-  @ma_short_dot "·"  # Dot for short MA
-  @ma_long_dot "○"   # Circle for long MA
-
-  @price_log_cooldown 60_000  # 60 seconds between price logs
-  @price_change_threshold 0.02  # 2% change threshold
-
-  @debug_log_limit 10  # Reduced from 15
 
   # Add color constants for network status
   @green_color "\e[32m"    # Green
@@ -88,6 +66,8 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
     [:jupiter_bot, :perpetuals, :price_fetch],
     [:jupiter_bot, :perpetuals, :price_fetch_error]
   ]
+
+  @display_height 30  # Default display height
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -197,7 +177,7 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   end
 
   defp build_output(state) do
-    {graph_height, debug_lines} = adjust_display_sizes()
+    {_graph_height, debug_lines} = adjust_display_sizes()
 
     [
       "#{@header_color}Jupiter Bot Trading Stats#{@reset_color}",
@@ -224,16 +204,7 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   end
 
   # Helper functions to format different parts of the display
-  defp format_market_list(markets, active_market) do
-    markets
-    |> Enum.map(fn {market, data} ->
-      active = if market == active_market, do: "* ", else: "  "
-      "#{active}#{market}: #{format_price(data.price)} USDC"
-    end)
-    |> Enum.join("\n")
-  end
-
-  defp format_price_info(%{current_price: price, current_position: position} = state) do
+  defp format_price_info(%{current_price: price, current_position: _position} = state) do
     price_str = format_price(price)
     change = calculate_price_change(state)
     change_color = if change >= 0, do: @green_color, else: @red_color
@@ -318,7 +289,7 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   defp format_signal_info(_), do: "Signal: Initializing..."
 
   @impl true
-  def handle_event([:jupiter_bot, :perpetuals, :price_fetch], measurements, metadata, _config) do
+  def handle_event([:jupiter_bot, :perpetuals, :price_fetch], measurements, _metadata, _config) do
     # Update network stats
     Process.put(:total_updates, (Process.get(:total_updates, 0) + 1))
     Process.put(:last_price_update_time, DateTime.utc_now() |> DateTime.to_unix())
@@ -373,7 +344,7 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
     add_debug_log("MA: #{message}")
   end
 
-  def handle_event(event_name, _measurements, _metadata, _config) do
+  def handle_event(_event_name, _measurements, _metadata, _config) do
     # Silently handle other events
     :ok
   end
@@ -391,13 +362,13 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   end
 
   @impl true
-  def handle_cast({:update_all, price, momentum, position, short_ma, long_ma} = update, state) do
+  def handle_cast({:update_all, _price, _momentum, _position, _short_ma, _long_ma} = update, state) do
     buffer_update(update)
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:price_update, market, _price, _timestamp} = update, state) do
+  def handle_cast({:price_update, _market, _price, _timestamp} = update, state) do
     buffer_update(update)
     {:noreply, state}
   end
@@ -505,8 +476,10 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
           String.pad_leading(format_price(current_price * 0.999), @price_label_width) <> " │ "
         ]
       else
-        # Generate full graph as before
-        graph_width = get_terminal_width() - @price_label_width - @margin_width
+        # Generate full graph
+        _graph_width = get_terminal_width() - @price_label_width - @margin_width
+        # We're not using graph_width directly here since the price labels
+        # and graph generation use different width calculations
 
         # Generate price labels with fewer steps
         price_labels = for i <- 0..@graph_height do
@@ -543,18 +516,6 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
     end
   end
 
-  # Helper to calculate MA points
-  defp calculate_ma_points(prices, width) do
-    prices
-    |> Enum.with_index()
-    |> Enum.map(fn {_, i} ->
-      %{
-        short: nil,
-        long: nil
-      }
-    end)
-  end
-
   defp calculate_price_change(%{price_history: []}), do: 0.0
   defp calculate_price_change(%{price_history: [_single]}), do: 0.0
   defp calculate_price_change(%{price_history: history}) do
@@ -575,36 +536,9 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   end
   defp get_price_color(_), do: @graph_neutral_color
 
-  defp get_column_color(current, previous) when is_number(current) and is_number(previous) do
-    cond do
-      current > previous -> @graph_up_color
-      current < previous -> @graph_down_color
-      true -> @graph_neutral_color
-    end
-  end
-  defp get_column_color(_, _), do: @graph_neutral_color
-
-  defp format_change(change) when is_number(change) do
-    color = get_price_color(change)
-    "#{color}#{if change >= 0, do: "▲", else: "▼"} #{abs(change) * 100 |> Float.round(2)}%#{@reset_color}"
-  end
-  defp format_change(_), do: ""
-
   defp format_price(price) when is_number(price), do: :erlang.float_to_binary(price, decimals: 4)
   defp format_price(_), do: "N/A"
 
-  defp format_percentage(value) when is_number(value), do: "#{:erlang.float_to_binary(value * 100, decimals: 2)}%"
-  defp format_percentage(_), do: "0.00%"
-
-  # Helper function to calculate moving averages
-  defp calculate_ma(prices, period) do
-    prices
-    |> Enum.take(period)
-    |> Enum.reduce(0, &(&1 + &2))
-    |> Kernel./(period)
-  end
-
-  # Add helper function to log debug messages
   defp add_debug_log(message) do
     timestamp = DateTime.utc_now() |> DateTime.to_time() |> Time.to_string()
     log_entry = "#{timestamp} | #{message}"
@@ -827,87 +761,6 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
     # Restore main screen and cursor
     IO.write(@ansi_show_cursor <> @ansi_main_screen)
     :ok
-  end
-
-  # Helper to determine if we should log a price update
-  defp should_log_price_update?(new_price) do
-    current_time = :os.system_time(:millisecond)
-    last_log_time = Process.get(:last_price_log_time, 0)
-
-    case Process.get(:last_logged_price) do
-      nil ->
-        Process.put(:last_logged_price, new_price)
-        false
-      last_price ->
-        time_since_last_log = current_time - last_log_time
-        change = abs((new_price - last_price) / last_price)
-
-        if change > @price_change_threshold and time_since_last_log > @price_log_cooldown do
-          Process.put(:last_logged_price, new_price)
-          Process.put(:last_price_log_time, current_time)
-          true
-        else
-          false
-        end
-    end
-  end
-
-  # Helper to format price change percentage
-  defp format_price_change(new_price) do
-    case Process.get(:last_logged_price) do
-      nil -> "+0.00%"
-      last_price ->
-        change = ((new_price - last_price) / last_price) * 100
-        if change >= 0 do
-          "+#{:erlang.float_to_binary(change, decimals: 2)}%"
-        else
-          "#{:erlang.float_to_binary(change, decimals: 2)}%"
-        end
-    end
-  end
-
-  defp format_moving_averages(%{ma_data: ma_data}) do
-    status = "Ready"
-
-    short_ma = case ma_data.short_ma do
-      nil -> "Calculating..."
-      value -> "#{format_price(value)} USDC"
-    end
-
-    medium_ma = case ma_data.medium_ma do
-      nil -> "Calculating..."
-      value -> "#{format_price(value)} USDC"
-    end
-
-    long_ma = case ma_data.long_ma do
-      nil -> "Calculating..."
-      value -> "#{format_price(value)} USDC"
-    end
-
-    [
-      "Moving Averages: #{status}",
-      "  Short (9):   #{short_ma}",
-      "  Medium (21): #{medium_ma}",
-      "  Long (50):   #{long_ma}",
-    ]
-  end
-
-  defp format_debug_logs do
-    [
-      "Debug Log (Last #{@debug_log_limit} messages)",
-      Process.get(:debug_logs, [])
-      |> Enum.take(@debug_log_limit)
-      |> Enum.join("\n")
-    ]
-  end
-
-  @impl true
-  def handle_cast({:update_market, market, data}, state) do
-    state = if is_nil(state), do: %{markets: %{}}, else: state
-    markets = Map.get(state, :markets, %{})
-
-    new_state = %{state | markets: Map.put(markets, market, data)}
-    {:noreply, new_state}
   end
 
   defp attach_network_handlers do

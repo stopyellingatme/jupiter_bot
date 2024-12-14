@@ -18,6 +18,7 @@ defmodule JupiterBot.Solana.WebsocketClient do
   @impl true
   def handle_connect(_conn, state) do
     Logger.info("Connected to Oracle Security WebSocket server")
+    :telemetry.execute([:jupiter_bot, :rpc, :connect], %{}, %{type: :websocket})
     {:ok, state}
   end
 
@@ -50,6 +51,13 @@ defmodule JupiterBot.Solana.WebsocketClient do
     {:reply, {:ok, price}, state}
   end
 
+  @impl true
+  def handle_disconnect(%{reason: reason}, state) do
+    Logger.warning("WebSocket disconnected: #{inspect(reason)}")
+    :telemetry.execute([:jupiter_bot, :rpc, :disconnect], %{}, %{type: :websocket, reason: reason})
+    {:ok, state}
+  end
+
   defp handle_price_update(%{"a" => "price", "b" => base, "q" => quote, "p" => price_str, "e" => exponent, "t" => timestamp} = data, state) do
     price = String.to_integer(price_str) * :math.pow(10, exponent)
     market = "#{base}-#{quote}"
@@ -66,6 +74,12 @@ defmodule JupiterBot.Solana.WebsocketClient do
         timestamp: timestamp
       },
       %{market: market}
+    )
+
+    :telemetry.execute(
+      [:jupiter_bot, :price_update, :success],
+      %{price: price},
+      %{market: market, timestamp: timestamp}
     )
 
     Phoenix.PubSub.broadcast(

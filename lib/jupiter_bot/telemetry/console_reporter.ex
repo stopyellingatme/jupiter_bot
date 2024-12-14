@@ -81,12 +81,32 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   @red_color "\e[31m"      # Red
   @reset_color "\e[0m"
 
+  # Add these near the top with other module attributes
+  @network_events [
+    [:jupiter_bot, :rpc, :connect],
+    [:jupiter_bot, :rpc, :disconnect],
+    [:jupiter_bot, :perpetuals, :price_fetch],
+    [:jupiter_bot, :perpetuals, :price_fetch_error]
+  ]
+
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @impl true
   def init(_opts) do
+    # Initialize network statistics in process dictionary
+    Process.put(:network_state, %{
+      rpc_status: :initializing,
+      last_price_update: nil,
+      total_updates: 0,
+      failed_requests: 0,
+      start_time: System.system_time(:second)
+    })
+
+    # Attach network telemetry handlers
+    attach_network_handlers()
+
     # Attach all telemetry handlers
     :telemetry.attach(
       "jupiter-bot-price-updates",
@@ -182,9 +202,6 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
     [
       "#{@header_color}Jupiter Bot Trading Stats#{@reset_color}",
       @divider,
-      "Active Markets:",
-      format_market_list(state.markets, state.active_market),
-      @divider,
       format_price_info(state),
       "",
       format_momentum_info(state),
@@ -197,7 +214,7 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
       "#{@header_color}Price Graph (Last #{length(state.price_history)} updates)#{@reset_color}"
     ] ++ generate_price_graph(state) ++ [
       @divider,
-      "#{@header_color}System Diagnostics#{@reset_color}",
+      "#{@header_color}System Information#{@reset_color}",
       format_system_diagnostics(),
       @divider,
       "#{@header_color}Debug Log (Last #{debug_lines} messages)#{@reset_color}"
@@ -301,13 +318,24 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
   defp format_signal_info(_), do: "Signal: Initializing..."
 
   @impl true
-  def handle_event([:jupiter_bot, :perpetuals, :price_fetch], %{price: price, timestamp: timestamp}, %{market: market}, _state) do
-    # Instead of trying to update state directly, use GenServer.cast
-    GenServer.cast(__MODULE__, {:update_market, market, %{
-      price: price,
-      timestamp: timestamp,
-      last_update: DateTime.utc_now()
-    }})
+  def handle_event([:jupiter_bot, :perpetuals, :price_fetch], measurements, metadata, _config) do
+    # Update network stats
+    Process.put(:total_updates, (Process.get(:total_updates, 0) + 1))
+    Process.put(:last_price_update_time, DateTime.utc_now() |> DateTime.to_unix())
+
+    # Log the update for debugging
+    add_debug_log("Price update received: #{measurements.price}")
+
+    :ok
+  end
+
+  def handle_event([:jupiter_bot, :perpetuals, :price_fetch_error], _measurements, metadata, _config) do
+    # Update error count
+    Process.put(:failed_requests, (Process.get(:failed_requests, 0) + 1))
+
+    # Log the error for debugging
+    add_debug_log("Price fetch error: #{inspect(metadata)}")
+
     :ok
   end
 
@@ -418,7 +446,19 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
       case state do
         %{price_history: history, min_price: min_price, max_price: max_price} = s
           when length(history) > 1 and not is_nil(min_price) and not is_nil(max_price) ->
-            generate_full_price_graph(s)
+            # Check if price has changed
+            last_graph = Process.get(:last_graph_state)
+            current_price = List.first(history).price
+
+            if last_graph && last_graph.price == current_price do
+              # Return cached graph if price hasn't changed
+              last_graph.graph
+            else
+              # Generate new graph and cache it
+              graph = generate_full_price_graph(s)
+              Process.put(:last_graph_state, %{price: current_price, graph: graph})
+              graph
+            end
 
         %{price_history: [price | _]} ->
             graph_width = get_terminal_width() - 12
@@ -446,18 +486,27 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
       # Validate price range
       price_range = max_price - min_price
 
-      if price_range <= 0 do
-        ["Initializing price range..."]
-      else
-        # Calculate available width
-        total_width = get_terminal_width()
-        graph_width = total_width - @price_label_width - @margin_width
+      # Check if prices are too similar
+      prices = history
+      |> Enum.take(get_terminal_width() - @price_label_width - @margin_width)
+      |> Enum.map(fn %{price: price} -> price end)
+      |> Enum.reverse()
 
-        # Take only as many prices as we can display
-        prices = history
-        |> Enum.take(graph_width)
-        |> Enum.map(fn %{price: price} -> price end)
-        |> Enum.reverse()
+      price_variance = Enum.max(prices) - Enum.min(prices)
+
+      if price_range <= 0 or price_variance < 0.0001 do
+        # If prices are too similar, show a simplified single-line display
+        current_price = List.first(prices)
+        graph_width = get_terminal_width() - @price_label_width - @margin_width
+        line = String.duplicate("─", graph_width)
+        [
+          String.pad_leading(format_price(current_price * 1.001), @price_label_width) <> " │ ",
+          String.pad_leading(format_price(current_price), @price_label_width) <> " │ #{@graph_neutral_color}#{line}#{@reset_color}",
+          String.pad_leading(format_price(current_price * 0.999), @price_label_width) <> " │ "
+        ]
+      else
+        # Generate full graph as before
+        graph_width = get_terminal_width() - @price_label_width - @margin_width
 
         # Generate price labels with fewer steps
         price_labels = for i <- 0..@graph_height do
@@ -627,72 +676,100 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
 
   defp format_system_diagnostics do
     try do
-      # Get network stats
+      # Get network stats with safer error handling
       network_stats = get_network_stats()
-      memory = :erlang.memory()
+
+      # Safely get memory info with defaults
+      memory = try do
+        :erlang.memory()
+      rescue
+        _ -> %{total: 0, processes: 0}
+      end
+
+      # Safely get process count
+      process_count = length(:erlang.processes())
+
+      # Calculate error rate safely
+      error_rate = if network_stats.updates_received > 0 do
+        failures = network_stats.failed_requests || 0
+        total = network_stats.updates_received + failures
+        "#{Float.round((failures / total) * 100, 2)}%"
+      else
+        "0.00%"
+      end
 
       [
         "Network Stats:",
         "  RPC Status: #{network_stats.rpc_status}",
-        "  Last Price Update: #{format_last_update(network_stats.last_update)}",
+        "  Last Price Update: #{network_stats.last_update}",
         "  Updates Received: #{network_stats.updates_received}",
-        "  Failed Requests: #{network_stats.failed_requests}",
+        "  Failed Requests: #{network_stats.failed_requests} (#{error_rate})",
         "  Connection Uptime: #{network_stats.uptime}",
         "",
-        "Memory Usage:",
-        "  Total: #{format_bytes(memory[:total])}",
-        "  Processes: #{format_bytes(memory[:processes])}",
-        "  ETS: #{format_bytes(memory[:ets])}",
-        "",
-        "Uptime: #{format_uptime()}"
+        "System Stats:",
+        "  Process Count: #{process_count}",
+        "  Memory Usage: #{format_bytes(memory[:total])}",
+        "  Process Memory: #{format_bytes(memory[:processes])}",
+        "  System Uptime: #{format_uptime()}"
       ] |> Enum.join("\n")
     rescue
-      _ -> "System diagnostics temporarily unavailable"
+      error ->
+        add_debug_log("Diagnostics error details: #{inspect(error, pretty: true)}")
+        "System diagnostics recovering... (#{inspect(error.__struct__)})"
     end
   end
 
+  # Add safer network stats handling
   defp get_network_stats do
-    # Get stats from process dictionary
-    updates = Process.get(:total_updates, 0)
-    failures = Process.get(:failed_requests, 0)
-    last_update = Process.get(:last_price_update_time)
-    start_time = Process.get(:start_time) || :os.system_time(:second)
+    network_state = Process.get(:network_state) || %{
+      rpc_status: :initializing,
+      last_price_update: nil,
+      total_updates: 0,
+      failed_requests: 0,
+      start_time: :os.system_time(:second)
+    }
 
-    # Calculate uptime
     current_time = :os.system_time(:second)
-    uptime = current_time - start_time
 
-    # Determine RPC status based on recent activity
-    rpc_status = case last_update do
-      nil -> "Initializing"
-      time when is_number(time) ->
-        if current_time - time > 10 do
-          "#{@red_color}Disconnected#{@reset_color}"
-        else
-          "#{@green_color}Connected#{@reset_color}"
-        end
-    end
+    # Ensure we have valid numbers for calculations
+    updates = network_state.total_updates || 0
+    failures = network_state.failed_requests || 0
+    start_time = network_state.start_time || current_time
 
     %{
-      rpc_status: rpc_status,
-      last_update: last_update,
+      rpc_status: format_rpc_status(network_state.rpc_status),
+      last_update: format_last_update(network_state.last_price_update),
       updates_received: updates,
       failed_requests: failures,
-      uptime: format_duration(uptime)
+      uptime: format_duration(max(current_time - start_time, 0))
     }
+  end
+
+  # Add helper functions for safer formatting
+  defp format_rpc_status(status) do
+    case status do
+      :connected -> "#{@green_color}Connected#{@reset_color}"
+      :disconnected -> "#{@red_color}Disconnected#{@reset_color}"
+      _ -> "Initializing"
+    end
   end
 
   defp format_last_update(nil), do: "Never"
   defp format_last_update(timestamp) do
-    seconds_ago = :os.system_time(:second) - timestamp
-    cond do
-      seconds_ago < 5 -> "#{@green_color}Just now#{@reset_color}"
-      seconds_ago < 30 -> "#{seconds_ago}s ago"
-      true -> "#{@red_color}#{seconds_ago}s ago#{@reset_color}"
+    try do
+      seconds_ago = DateTime.diff(DateTime.utc_now(), timestamp)
+      cond do
+        seconds_ago < 5 -> "#{@green_color}Just now#{@reset_color}"
+        seconds_ago < 30 -> "#{seconds_ago}s ago"
+        true -> "#{@red_color}#{seconds_ago}s ago#{@reset_color}"
+      end
+    rescue
+      _ -> "Invalid timestamp"
     end
   end
 
-  defp format_duration(seconds) do
+  # Update format_duration to handle edge cases
+  defp format_duration(seconds) when is_integer(seconds) and seconds >= 0 do
     {h, m, s} = {
       div(seconds, 3600),
       rem(div(seconds, 60), 60),
@@ -700,11 +777,18 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
     }
     "#{h}h #{m}m #{s}s"
   end
+  defp format_duration(_), do: "0h 0m 0s"
 
-  defp format_bytes(bytes) when bytes < 1024, do: "#{bytes} B"
-  defp format_bytes(bytes) when bytes < 1024 * 1024, do: "#{Float.round(bytes / 1024, 2)} KB"
-  defp format_bytes(bytes) when bytes < 1024 * 1024 * 1024, do: "#{Float.round(bytes / 1024 / 1024, 2)} MB"
-  defp format_bytes(bytes), do: "#{Float.round(bytes / 1024 / 1024 / 1024, 2)} GB"
+  # Update format_bytes to handle edge cases
+  defp format_bytes(bytes) when is_integer(bytes) and bytes >= 0 do
+    cond do
+      bytes < 1024 -> "#{bytes} B"
+      bytes < 1024 * 1024 -> "#{Float.round(bytes / 1024, 2)} KB"
+      bytes < 1024 * 1024 * 1024 -> "#{Float.round(bytes / 1024 / 1024, 2)} MB"
+      true -> "#{Float.round(bytes / 1024 / 1024 / 1024, 2)} GB"
+    end
+  end
+  defp format_bytes(_), do: "0 B"
 
   defp format_uptime do
     {time, _} = :erlang.statistics(:wall_clock)
@@ -824,5 +908,50 @@ defmodule JupiterBot.Telemetry.ConsoleReporter do
 
     new_state = %{state | markets: Map.put(markets, market, data)}
     {:noreply, new_state}
+  end
+
+  defp attach_network_handlers do
+    Enum.each(@network_events, fn event_name ->
+      :telemetry.attach(
+        "network-#{inspect(event_name)}",
+        event_name,
+        &handle_network_event/4,
+        nil
+      )
+    end)
+  end
+
+  defp handle_network_event([:jupiter_bot, :rpc, :connect], _measurements, _metadata, _config) do
+    update_network_state(:rpc_status, :connected)
+  end
+
+  defp handle_network_event([:jupiter_bot, :rpc, :disconnect], _measurements, _metadata, _config) do
+    update_network_state(:rpc_status, :disconnected)
+  end
+
+  defp handle_network_event([:jupiter_bot, :perpetuals, :price_fetch], _measurements, _metadata, _config) do
+    update_network_state(:last_price_update, DateTime.utc_now())
+    update_network_state(:total_updates, &(&1 + 1))
+  end
+
+  defp handle_network_event([:jupiter_bot, :perpetuals, :price_fetch_error], _measurements, _metadata, _config) do
+    update_network_state(:failed_requests, &(&1 + 1))
+  end
+
+  defp update_network_state(key, value_or_fun) do
+    current_state = Process.get(:network_state) || %{
+      rpc_status: :initializing,
+      last_price_update: nil,
+      total_updates: 0,
+      failed_requests: 0,
+      start_time: System.system_time(:second)
+    }
+
+    new_value = case value_or_fun do
+      fun when is_function(fun, 1) -> fun.(Map.get(current_state, key, 0))
+      value -> value
+    end
+
+    Process.put(:network_state, Map.put(current_state, key, new_value))
   end
 end

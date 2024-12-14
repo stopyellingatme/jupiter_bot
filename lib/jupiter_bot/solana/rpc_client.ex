@@ -19,6 +19,8 @@ defmodule JupiterBot.Solana.RPCClient do
 
   @impl true
   def init(_opts) do
+    :telemetry.execute([:jupiter_bot, :rpc, :connect], %{}, %{type: :rpc})
+
     {:ok, %{
       current_node: Application.get_env(:jupiter_bot, :primary_rpc_node),
       retry_count: 0
@@ -39,23 +41,28 @@ defmodule JupiterBot.Solana.RPCClient do
   end
 
   defp do_send_transaction(transaction, state) do
-    # Initialize the Solana RPC client
     client = Solana.RPC.client(
       network: state.current_node,
       adapter: {Tesla.Adapter.Gun, certificates_verification: true}
     )
 
-    # Make sure you have the correct Solana package version that includes this function
-    # or implement your own send_transaction function
     case Solana.RPC.send_encoded_transaction(client, transaction) do
-      {:ok, signature} -> {:ok, signature}
-      error -> error
+      {:ok, signature} = result ->
+        :telemetry.execute([:jupiter_bot, :price_update, :success], %{}, %{type: :rpc})
+        result
+      error ->
+        :telemetry.execute([:jupiter_bot, :price_update, :failure], %{}, %{type: :rpc, error: error})
+        error
     end
   end
 
   defp handle_retry(state) do
     next_node = Enum.at(@backup_nodes, state.retry_count)
     Logger.warning("Switching to backup node: #{next_node}")
+
+    :telemetry.execute([:jupiter_bot, :rpc, :disconnect], %{}, %{type: :rpc, node: state.current_node})
+    :telemetry.execute([:jupiter_bot, :rpc, :connect], %{}, %{type: :rpc, node: next_node})
+
     %{state |
       current_node: next_node,
       retry_count: state.retry_count + 1

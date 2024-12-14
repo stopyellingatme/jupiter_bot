@@ -61,14 +61,23 @@ defmodule JupiterBot.Trading.Strategies.MovingAverage do
   end
   def calculate_indicators(_), do: nil
 
-  defp calculate_single_ma(prices, period) do
-    if length(prices) >= period do
-      ma = Enum.take(prices, period) |> Enum.sum() |> Kernel./(period)
-      {ma, true}
-    else
-      {nil, false}
+  @doc """
+  Calculates a single moving average value for the given period.
+  Returns {value, ready} tuple where ready indicates if enough data was available.
+  """
+  defp calculate_single_ma(prices, period) when is_list(prices) and length(prices) >= period do
+    case Enum.take(prices, period) do
+      [] -> {nil, false}
+      values ->
+        # Ensure we have valid numbers before calculation
+        if Enum.any?(values, &is_nil/1) do
+          {nil, false}
+        else
+          {Enum.sum(values) / period, true}
+        end
     end
   end
+  defp calculate_single_ma(_, _), do: {nil, false}
 
   defp log_calculation_status(price, total_count, short_ready, medium_ready, long_ready) do
     status = "Price: #{format_float(price)} | " <>

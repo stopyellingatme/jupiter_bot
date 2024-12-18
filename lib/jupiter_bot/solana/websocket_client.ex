@@ -67,11 +67,17 @@ defmodule JupiterBot.Solana.WebsocketClient do
     "b" => base,
     "q" => quote,
     "p" => price_str,
-    "e" => _exponent,
-    "t" => _timestamp
+    "t" => timestamp
   } = _data, state) do
-    # Update price in WebsocketState
-    WebsocketState.update_price("#{base}-#{quote}", price_str)
+    market = "#{base}-#{quote}"
+
+    # Update WebsocketState
+    WebsocketState.update_price(market, price_str)
+
+    # Store in PriceHistory
+    JupiterBot.Trading.PriceHistory.store_price(market, price_str,
+      DateTime.from_unix!(timestamp))
+
     {:ok, state}
   end
 end

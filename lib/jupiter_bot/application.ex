@@ -11,7 +11,8 @@ defmodule JupiterBot.Application do
       # Start the Telemetry supervisor
       JupiterBot.Telemetry.ConsoleReporter,
       # Start the Trading supervisor
-      JupiterBot.Supervisor.TradingSupervisor
+      JupiterBot.Supervisor.TradingSupervisor,
+      {JupiterBot.Trading.PriceHistory, []},
     ]
 
     opts = [strategy: :one_for_one, name: JupiterBot.Supervisor]
